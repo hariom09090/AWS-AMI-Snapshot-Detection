@@ -1,0 +1,148 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS CloudFormation Template for EventBridge Scheduler, Lambda function, and SNS topic'
+
+Parameters:
+  AccountName:
+    Type: String
+    Description: Enter the account name of this account
+
+  EmailAddress:
+    Type: String
+    Description: Enter the email address to which SNS notifications will be sent. Subscribe this email address to the SNS topic to receive notifications.
+
+  ScheduleExpression:
+    Type: String
+    Description:  Enter the EventBridge ScheduleExpression in UTC format, cron(<Minute> <Hour> <Day of Month> <Month> <Day of Week> <Year>), the default value is set to trigger the Lambda function every Monday at 4:30 AM UTC
+    Default: 'cron(30 4 ? * MON *)'
+
+Resources:
+  SNSTopic:
+    Type: 'AWS::SNS::Topic'
+    Description: SNS topic for CloudWatch Events notifications
+    Properties:
+      DisplayName:  OldAMISnapshotTopic
+      TopicName:  OldAMISnapshotTopic
+
+  SNSEmailSub:
+    Type: 'AWS::SNS::Subscription'
+    Description: SNS subscription for email notifications
+    Properties:
+      TopicArn: !Ref SNSTopic
+      Protocol: email
+      Endpoint: !Ref EmailAddress
+
+  BucketName:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub s3bucket-${AWS::AccountId}
+      AccessControl: Private
+
+  LambdaRole:
+    Type: 'AWS::IAM::Role'
+    Description: IAM role for the Lambda function
+    Properties:
+      RoleName:  OldAMISnapshotLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName:  OldAMISnapshotLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: LambdaFunctionPermissions
+                Effect: Allow
+                Action:
+                  - 'sns:Publish'
+                Resource: !Ref SNSTopic
+              - Sid: S3BucketPermissions
+                Effect: Allow
+                Action:
+                  - 's3:PutObject'
+                  - 's3:GetObject'
+                Resource: !Join ['', ['arn:aws:s3:::', !Ref BucketName, '/Old-AMI-Snapshot/*']]
+              - Sid: EC2DescribeRegions
+                Effect: Allow
+                Action: 'ec2:DescribeRegions'
+                Resource: '*'
+              - Sid: EC2DescribeImages
+                Effect: Allow
+                Action: 'ec2:DescribeImages'
+                Resource: '*'
+              - Sid: EC2DescribeSnapshots
+                Effect: Allow
+                Action: 'ec2:DescribeSnapshots'
+                Resource: '*'
+
+  LambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Description: Lambda function to handle AMI snapshot scheduling
+    Properties:
+      FunctionName:  OldAMISnapshotLambda
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 900
+      Code:
+        S3Bucket:  hariom-cfn-code
+        S3Key: old-ami-snapshot/lambda_function.zip
+      Environment:
+        Variables:
+          TOPIC_ARN: !Ref SNSTopic
+          ACCOUNT_NAME: !Ref AccountName
+          BUCKET_NAME: !Ref BucketName
+
+  LambdaLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${LambdaFunction}"
+
+  BucketPolicy:
+    Type: 'AWS::S3::BucketPolicy'
+    Properties:
+      Bucket: !Ref BucketName
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt LambdaRole.Arn
+            Action: 's3:PutObject'
+            Resource: !Join ['', ['arn:aws:s3:::', !Ref BucketName, '/Old-AMI-Snapshot/*']]
+
+  EventRule:
+    Type: 'AWS::Events::Rule'
+    Properties:
+      Name: !Sub  OldAMISnapshotRule
+      ScheduleExpression: !Ref ScheduleExpression
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt LambdaFunction.Arn  
+          Id: LambdaTarget
+
+  EventPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref LambdaFunction  
+      Action: 'lambda:InvokeFunction'
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt EventRule.Arn 
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the created Lambda function
+    Value: !GetAtt LambdaFunction.Arn
+
+  BucketNameOutput:
+    Description: Name of the created S3 bucket
+    Value: !Ref BucketName
+
+  SNSTopicArn:
+    Description: ARN of the created SNS topic
+    Value: !Ref SNSTopic
