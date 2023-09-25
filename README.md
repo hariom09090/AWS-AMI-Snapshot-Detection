@@ -8,7 +8,7 @@ This architecture is designed to automate the management of Amazon Machine Image
 
 ![Architecture](Architecture.png)
 
-### Key Features
+## Key Features
 
 - **Automation**: This CloudFormation (CFN) template sets up an automated resource management system.
 - **Event Trigger**: It configures an EventBridge rule to trigger a Lambda function at predefined intervals.
